@@ -4,7 +4,11 @@
 
 >**ASSUMPTIONS FOR USAGE:** There are a few assumptions required to utilize this set-up and incorporate the retry logic as supplied. The first is that all models are deployed using the *model name* as the *deployment name*. For instance, the GPT-35-Turbo or ChatGPT model is deployed as "gpt-35-turbo", and not as "chat" or another customized name, across all your Azure OpenAI Resources. Second, the supplied XML and retry logic therein only attempts to handle for 429 responses from underlying Azure OpenAI API endpoints. The code as supplied covers 6 endpoints in East US and South Central regions but the logic can easily be expanded to use more regions and endpoints or fewer.
 
-[Location of XML Policy Script](./assets/apim_aoai_retry_06062023.xml)
+[XML Policy Script](./assets/apim_aoai_retry_06272023.xml)
+
+[Excel File for Models per Region and Tokens Overview as of June 26, 2027](./assets/apim%20retry%20policy%20update%20june%2027%202023.xlsx)
+
+Updated on 06/29/2023 to incorporate the [06/09/2023 Quota and Limit changes.](./assets/old_vs_new_quota.png)
 
 Repository detailing the deployment of an Enterprise Azure OpenAI reference architecture.
 <br/>Link: [Azure Architecture Center - Monitor OpenAI Models](https://learn.microsoft.com/en-us/azure/architecture/example-scenario/ai/log-monitor-azure-openai)
