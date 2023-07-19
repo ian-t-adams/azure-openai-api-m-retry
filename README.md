@@ -1,12 +1,14 @@
 # Enterprise Azure OpenAI with Retry Logic
 
+Updated as of July 19, 2023 to incorporate new North Central Models
+
 >**Note**: This repository builds off the [Enterprise Azure OpenAI Repository](https://github.com/Azure-Samples/openai-python-enterprise-logging) and adds in retry logic to handle 429 responses and manage traffic across multiple Azure OpenAI Endpoints.
 
 >**ASSUMPTIONS FOR USAGE:** There are a few assumptions required to utilize this set-up and incorporate the retry logic as supplied. The first is that all models are deployed using the *model name* as the *deployment name*. For instance, the GPT-35-Turbo or ChatGPT model is deployed as "gpt-35-turbo", and not as "chat" or another customized name, across all your Azure OpenAI Resources. Second, the supplied XML and retry logic therein only attempts to handle for 429 responses from underlying Azure OpenAI API endpoints. The code as supplied covers 6 endpoints in East US and South Central regions but the logic can easily be expanded to use more regions and endpoints or fewer.
 
-[XML Policy Script](./assets/apim_aoai_retry_07032023.xml)
+[XML Policy Script](./assets/apim_aoai_retry_07192023.xml)
 
-[Excel File for Models per Region and Tokens Overview as of July 03, 2023](./assets/apim%20retry%20policy%20update%20july%203%202023.xlsx)
+[Excel File for Models per Region and Tokens Overview as of July 19, 2023](./assets/apim%20retry%20policy%20update%20july%2019%202023.xlsx)
 
 Updated on 06/29/2023 to incorporate the [06/09/2023 Quota and Limit changes.](./assets/old_vs_new_quota.png)
 
