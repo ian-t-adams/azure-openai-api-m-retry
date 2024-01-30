@@ -1,0 +1,39 @@
+<!--
+    IMPORTANT:
+    - Policy fragment are included as-is whenever they are referenced.
+    - If using variables. Ensure they are setup before use.
+    - Copy and paste your code here or simply start coding
+
+    Governs the retry policy and backendUrl resets when a 429 occurs for the gpt-4v deployment-id
+-->
+<fragment>
+    <retry condition="@(context.Response.StatusCode == 429 && (context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4v"))" count="8" interval="15" delta="5" first-fast-retry="true">
+        <set-variable name="urlId" value="@(context.Variables.GetValueOrDefault<int>("urlId") % 4 + 1)" />
+        <choose>
+            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                <set-variable name="backendUrl" value="{{aoai-australiaeast-endpoint}}" />
+                <set-header name="api-key" exists-action="override">
+                    <value>{{aoai-australiaeast-key}}</value>
+                </set-header>
+            </when>
+            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                <set-variable name="backendUrl" value="{{aoai-swedencentral-endpoint}}" />
+                <set-header name="api-key" exists-action="override">
+                    <value>{{aoai-swedencentral-key}}</value>
+                </set-header>
+            </when>
+            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                <set-variable name="backendUrl" value="{{aoai-switzerlandnorth-endpoint}}" />
+                <set-header name="api-key" exists-action="override">
+                    <value>{{aoai-switzerlandnorth-key}}</value>
+                </set-header>
+            </when>
+            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 4)">
+                <set-variable name="backendUrl" value="{{aoai-westus-endpoint}}" />
+                <set-header name="api-key" exists-action="override">
+                    <value>{{aoai-westus-key}}</value>
+                </set-header>
+            </when>
+        </choose>
+    </retry>
+</fragment>

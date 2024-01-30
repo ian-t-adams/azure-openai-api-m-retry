@@ -1,0 +1,1163 @@
+<!--
+    IMPORTANT:
+    - Policy elements can appear only within the <inbound>, <outbound>, <backend> section elements.
+    - To apply a policy to the incoming request (before it is forwarded to the backend service), place a corresponding policy element within the <inbound> section element.
+    - To apply a policy to the outgoing response (before it is sent back to the caller), place a corresponding policy element within the <outbound> section element.
+    - To add a policy, place the cursor at the desired insertion point and select a policy from the sidebar.
+    - To remove a policy, delete the corresponding policy statement from the policy document.
+    - Position the <base> element within a section element to inherit all policies from the corresponding section element in the enclosing scope.
+    - Remove the <base> element to prevent inheriting policies from the corresponding section element in the enclosing scope.
+    - Policies are applied in the order of their appearance, from the top down.
+    - Comments within policy elements are not supported and may disappear. Place your comments between policy elements or at a higher level scope.
+
+API-M RETRY LOGIC FOR AZURE OPEN AI SERVICE NOTES - 12/13/2023
+This code defines an Azure API Management Service policy configuration that dynamically routes API requests to different backend services based on the "deployment-id" parameter. 
+The routing logic uses a random number generator to distribute the requests among the available backend services for each deployment model. 
+The policy also implements a retry mechanism for handling rate-limiting (HTTP 429) responses. 
+
+Here's a summary of the policy behavior:
+1. Extracts the "deployment-id" parameter from the incoming request.
+2. Based on the "deployment-id", the policy determines which backend services are available for the specific model.
+3. Selects a backend service using a random number generator and sets that to a variable urlId.
+4. Sets the backend service URL and API key based on the selected backend service identified by the urlId.
+5. Performs cache lookup to check if a cached response is available.
+6. Implements a retry mechanism for rate-limiting (HTTP 429) responses, adjusting the backend service selection for each retry attempt.
+7. Stores successful responses in the cache for 20 minutes.
+
+This policy ensures efficient load distribution among backend services, provides a robust retry mechanism for handling rate-limiting, and leverages caching to improve overall performance.
+
+NOTE:
+The "deployment-id" variable is capturing and evaluating the name of the model as you created it - so if you named it "custom-gpt-35-turbo" instead of "gpt-35-turbo" you will need to edit the policies below. This code assumes all models are deployed as named and that each model is deployed in each region only once.
+
+PLEASE NOTE THAT WHEN YOU CHANGE THE NUMBER OF ENDPOINTS BEING USED !!!
+You will need to edit the code for every time you both set and evaluate "urlId" to make sure you are using the correct number of endpoints - whenever you 
+use (new Random(context.RequestId.GetHashCode()).Next or (context.Variables.GetValueOrDefault<int>("urlId"). 
+If you have 5 endpoints, the initial .Next should have (1, 6) as it's inclusive of 1 and exclusive of the top-end 6. 
+The GetValueOrDefault<int>("urlId") then evaluates and adds 1, so not setting the numbers properly may evaluate to a non-existent "urlId" and throws a 500 response code.
+-->
+<policies>
+    <inbound>
+        <base />
+        <!-- Extracting the "deployment-id" parameter from the incoming request and setting it to the aoaiModelName variable.
+             This represents the name under which the model is deployed; it should be the same in ALL regions you wish to allow
+             endpoint selection and retries in -->
+        <set-variable name="aoaiModelName" value="@(context.Request.MatchedParameters["deployment-id"])" />
+        <!-- Determines whether an inbound request has streaming set to true; if the inbound call is set to stream,
+             then we do not send the results to our Event Hub logger\
+             See https://journeyofthegeek.com/2023/11/10/the-challenge-of-logging-azure-openai-stream-completions/
+             or
+             https://github.com/timoklimmer/powerproxy-aoai
+             on ways to handle streaming results for logging purposes -->
+        <set-variable name="isStream" value="@(context.Request.Body.As<JObject>(true)["stream"].Value<bool>())" />
+        <choose>
+            <when condition="@(!string.IsNullOrEmpty(context.Variables.GetValueOrDefault<string>("aoaiModelName")))">
+                <choose>
+                    <!-- Determining the number of backend services available for the specific model based on the "deployment-id"
+                         and then setting that randomly generationed number to the urlId variable -->
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-0301")">
+                        <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 2))" /> // 1 endpoint
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-0613")">
+                        <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 11))" /> // 10 endpoints
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-1106")">
+                        <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 8))" /> // 7 endpoints
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-16k")">
+                        <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 11))" /> // 10 endpoints
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-instruct")">
+                        <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 3))" /> // 2 endpoints
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4")">
+                        <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 7))" /> // 6 endpoints
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4-32k")">
+                        <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 7))" /> // 6 endpoints
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4-turbo")">
+                        <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 10))" /> // 9 endpoints
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4v")">
+                        <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 5))" /> // 4 endpoints
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "text-embedding-ada-002")">
+                        <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 15))" /> // 14 endpoints
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "dall-e-3")">
+                        <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 2))" /> // 1 endpoint
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "whisper")">
+                        <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 3))" /> // 2 endpoints
+                    </when>
+                </choose>
+                <!-- Evaluates the "aoaiModelName" variable and then the "urldId" variable to determine which backend service to utilize. Then it sets the appropriate "backendUrl" and api-key based on the Named values for the service -->
+                <choose>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-0301")">
+                        <choose>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                                <set-variable name="backendUrl" value="{{aoai-westeurope-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-westeurope-key}}</value>
+                                </set-header>
+                            </when>
+                        </choose>
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-0613")">
+                        <choose>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                                <set-variable name="backendUrl" value="{{aoai-australiaeast-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-australiaeast-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                                <set-variable name="backendUrl" value="{{aoai-canadaeast-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-canadaeast-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                                <set-variable name="backendUrl" value="{{aoai-eastus-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-eastus-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 4)">
+                                <set-variable name="backendUrl" value="{{aoai-eastus2-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-eastus2-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 5)">
+                                <set-variable name="backendUrl" value="{{aoai-francecentral-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-francecentral-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 6)">
+                                <set-variable name="backendUrl" value="{{aoai-japaneast-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-japaneast-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 7)">
+                                <set-variable name="backendUrl" value="{{aoai-northcentral-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-northcentral-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 8)">
+                                <set-variable name="backendUrl" value="{{aoai-swedencentral-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-swedencentral-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 9)">
+                                <set-variable name="backendUrl" value="{{aoai-switzerlandnorth-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-switzerlandnorth-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 10)">
+                                <set-variable name="backendUrl" value="{{aoai-uksouth-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-uksouth-key}}</value>
+                                </set-header>
+                            </when>
+                        </choose>
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-1106")">
+                        <choose>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                                <set-variable name="backendUrl" value="{{aoai-australiaeast-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-australiaeast-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                                <set-variable name="backendUrl" value="{{aoai-canadaeast-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-canadaeast-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                                <set-variable name="backendUrl" value="{{aoai-francecentral-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-francecentral-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 4)">
+                                <set-variable name="backendUrl" value="{{aoai-southindia-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-southindia-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 5)">
+                                <set-variable name="backendUrl" value="{{aoai-swedencentral-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-swedencentral-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 6)">
+                                <set-variable name="backendUrl" value="{{aoai-uksouth-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-uksouth-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 7)">
+                                <set-variable name="backendUrl" value="{{aoai-westus-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-westus-key}}</value>
+                                </set-header>
+                            </when>
+                        </choose>
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-16k")">
+                        <choose>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                                <set-variable name="backendUrl" value="{{aoai-australiaeast-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-australiaeast-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                                <set-variable name="backendUrl" value="{{aoai-canadaeast-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-canadaeast-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                                <set-variable name="backendUrl" value="{{aoai-eastus-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-eastus-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 4)">
+                                <set-variable name="backendUrl" value="{{aoai-eastus2-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-eastus2-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 5)">
+                                <set-variable name="backendUrl" value="{{aoai-francecentral-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-francecentral-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 6)">
+                                <set-variable name="backendUrl" value="{{aoai-japaneast-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-japaneast-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 7)">
+                                <set-variable name="backendUrl" value="{{aoai-northcentral-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-northcentral-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 8)">
+                                <set-variable name="backendUrl" value="{{aoai-swedencentral-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-swedencentral-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 9)">
+                                <set-variable name="backendUrl" value="{{aoai-switzerlandnorth-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-switzerlandnorth-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 10)">
+                                <set-variable name="backendUrl" value="{{aoai-uksouth-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-uksouth-key}}</value>
+                                </set-header>
+                            </when>
+                        </choose>
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-instruct")">
+                        <choose>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                                <set-variable name="backendUrl" value="{{aoai-australiaeast-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-australiaeast-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                                <set-variable name="backendUrl" value="{{aoai-swedencentral-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-swedencentral-key}}</value>
+                                </set-header>
+                            </when>
+                        </choose>
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4")">
+                        <choose>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                                <set-variable name="backendUrl" value="{{aoai-australiaeast-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-australiaeast-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                                <set-variable name="backendUrl" value="{{aoai-canadaeast-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-canadaeast-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                                <set-variable name="backendUrl" value="{{aoai-eastus-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-eastus-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 4)">
+                                <set-variable name="backendUrl" value="{{aoai-francecentral-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-francecentral-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 5)">
+                                <set-variable name="backendUrl" value="{{aoai-swedencentral-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-swedencentral-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 6)">
+                                <set-variable name="backendUrl" value="{{aoai-switzerlandnorth-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-switzerlandnorth-key}}</value>
+                                </set-header>
+                            </when>
+                        </choose>
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4-32k")">
+                        <choose>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                                <set-variable name="backendUrl" value="{{aoai-australiaeast-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-australiaeast-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                                <set-variable name="backendUrl" value="{{aoai-canadaeast-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-canadaeast-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                                <set-variable name="backendUrl" value="{{aoai-eastus-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-eastus-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 4)">
+                                <set-variable name="backendUrl" value="{{aoai-francecentral-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-francecentral-key}}</value>
+                                </set-header>
+                            </when> 
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 5)">
+                                <set-variable name="backendUrl" value="{{aoai-swedencentral-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-swedencentral-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 6)">
+                                <set-variable name="backendUrl" value="{{aoai-switzerlandnorth-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-switzerlandnorth-key}}</value>
+                                </set-header>
+                            </when>
+                        </choose>
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4-turbo")">
+                        <choose>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                                <set-variable name="backendUrl" value="{{aoai-australiaeast-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-australiaeast-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                                <set-variable name="backendUrl" value="{{aoai-canadaeast-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-canadaeast-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                                <set-variable name="backendUrl" value="{{aoai-eastus2-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-eastus2-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 4)">
+                                <set-variable name="backendUrl" value="{{aoai-francecentral-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-francecentral-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 5)">
+                                <set-variable name="backendUrl" value="{{aoai-norwayeast-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-norwayeast-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 6)">
+                                <set-variable name="backendUrl" value="{{aoai-southindia-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-southindia-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 7)">
+                                <set-variable name="backendUrl" value="{{aoai-swedencentral-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-swedencentral-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 8)">
+                                <set-variable name="backendUrl" value="{{aoai-uksouth-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-uksouth-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 9)">
+                                <set-variable name="backendUrl" value="{{aoai-westus-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-westus-key}}</value>
+                                </set-header>
+                            </when>
+                        </choose>
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4v")">
+                        <choose>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                                <set-variable name="backendUrl" value="{{aoai-australiaeast-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-australiaeast-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                                <set-variable name="backendUrl" value="{{aoai-swedencentral-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-swedencentral-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                                <set-variable name="backendUrl" value="{{aoai-switzerlandnorth-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-switzerlandnorth-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 4)">
+                                <set-variable name="backendUrl" value="{{aoai-westus-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-westus-key}}</value>
+                                </set-header>
+                            </when>
+                        </choose>
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "text-embedding-ada-002")">
+                        <choose>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                                <set-variable name="backendUrl" value="{{aoai-australiaeast-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-australiaeast-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                                <set-variable name="backendUrl" value="{{aoai-canadaeast-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-canadaeast-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                                <set-variable name="backendUrl" value="{{aoai-eastus-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-eastus-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 4)">
+                                <set-variable name="backendUrl" value="{{aoai-eastus2-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-eastus2-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 5)">
+                                <set-variable name="backendUrl" value="{{aoai-francecentral-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-francecentral-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 6)">
+                                <set-variable name="backendUrl" value="{{aoai-japaneast-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-japaneast-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 7)">
+                                <set-variable name="backendUrl" value="{{aoai-northcentral-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-northcentral-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 8)">
+                                <set-variable name="backendUrl" value="{{aoai-norwayeast-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-norwayeast-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 9)">
+                                <set-variable name="backendUrl" value="{{aoai-southindia-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-southindia-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 10)">
+                                <set-variable name="backendUrl" value="{{aoai-swedencentral-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-swedencentral-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 11)">
+                                <set-variable name="backendUrl" value="{{aoai-switzerlandnorth-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-switzerlandnorth-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 12)">
+                                <set-variable name="backendUrl" value="{{aoai-uksouth-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-uksouth-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 13)">
+                                <set-variable name="backendUrl" value="{{aoai-westeurope-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-westeurope-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 14)">
+                                <set-variable name="backendUrl" value="{{aoai-westus-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-westus-key}}</value>
+                                </set-header>
+                            </when>
+                        </choose>
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "dall-e-3")">
+                        <choose>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                                <set-variable name="backendUrl" value="{{aoai-swedencentral-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-swedencentral-key}}</value>
+                                </set-header>
+                            </when>
+                        </choose>
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "whisper")">
+                        <choose>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                                <set-variable name="backendUrl" value="{{aoai-northcentral-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-northcentral-key}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                                <set-variable name="backendUrl" value="{{aoai-westeurope-endpoint}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{aoai-westeurope-key}}</value>
+                                </set-header>
+                            </when>
+                        </choose>
+                    </when>
+                    <otherwise>
+                        <set-variable name="backendUrl" value="{{aoai-eastus-endpoint}}" />
+                        <set-header name="api-key" exists-action="override">
+                            <value>{{aoai-eastus-key}}</value>
+                        </set-header>
+                    </otherwise>
+                </choose>
+                <set-backend-service base-url="@((string)context.Variables["backendUrl"])" />
+            </when>
+            <otherwise>
+                <return-response>
+                    <set-status code="500" reason="DeploymentIdNotProvided" />
+                    <set-header name="Microsoft-Azure-Api-Management-Correlation-Id" exists-action="override">
+                        <value>@{return Guid.NewGuid().ToString();}</value>
+                    </set-header>
+                    <set-body>A deployment-id must be supplied for processing the request.</set-body>
+                </return-response>
+            </otherwise>
+        </choose>
+        <cache-lookup vary-by-developer="false" vary-by-developer-groups="false" downstream-caching-type="none">
+            <vary-by-header>Accept</vary-by-header>
+            <vary-by-header>Accept-Charset</vary-by-header>
+            <vary-by-header>Authorization</vary-by-header>
+        </cache-lookup>
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+<!-- 
+The retry is set to automatically retry the request when the following conditions are met:
+
+The response status code is 429 (Too Many Requests): 
+This usually indicates that the client has sent too many requests in a given amount of time, and the server is rate-limiting the requests.
+AND
+The deployment-id evaluates to be a certain model type - it should not get to the point of hitting the retry policy if there is no deploment-id matching what is provided in the initial request.
+
+Retry Policy Definitions:
+count: This attribute specifies the maximum number of retries that the policy will attempt if the specified condition is met. 
+For example, if count="5", the policy will retry up to 5 times.
+
+interval: This attribute specifies the time interval (in seconds) between each retry attempt. 
+If interval="1", there will be a 1-second delay between retries.
+
+delta: This attribute specifics the time (in seconds) to be added after each subsequent retry attempt; it does not apply between the first and second retry attempts if first-fast-try is set to true.
+
+first-fast-retry: This attribute, when set to true, allows the first retry attempt to happen immediately, without waiting for 
+the specified interval. If set to false, all retry attempts will wait for the interval duration before being executed.
+
+When the retry policy is triggered, it will execute the logic inside the <choose> block to modify the backend service URL and API key based on the value of the urlId variable. This effectively changes the backend service to which the request will be retried, in case the initial backend service returns a 429 status code.
+
+The Backend Service, governed by the "backendUrl", is selected based on the "urlId" variable. With each subsequent retry, "urlId" is incremented by 1. There are different retry blocks for each model as each model has different Token Per Minute (TPM) rates and number of regions that serve that model. 
+Therefore, to allow for different retry rates, the models enter different retry blocks with different settings for the retry. You may wish to modify those settings based on your application and requirements.
+
+PLEASE NOTE THAT WHEN YOU CHANGE THE NUMBER OF ENDPOINTS BEING USED !!!
+You will need to edit the code for every time you both set and evaluate "urlId" to make sure you are using the correct number of endpoints - whenever you 
+use (new Random(context.RequestId.GetHashCode()).Next or (context.Variables.GetValueOrDefault<int>("urlId"). 
+If you have 5 endpoints, the initial .Next should have (1, 6) as it's inclusive of 1 and exclusive of the top-end 6. 
+The GetValueOrDefault<int>("urlId") then evaluates and adds 1, so not setting the numbers properly may evaluate to a non-existent "urlId" and throws a 500 response code.
+-->
+    <outbound>
+        <retry condition="@(context.Response.StatusCode == 429 && (context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-0301"))" count="4" interval="20" delta="10" first-fast-retry="false">
+            <set-variable name="urlId" value="@(context.Variables.GetValueOrDefault<int>("urlId") % 1 + 1)" />
+            <choose>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                    <set-backend-service base-url="{{aoai-westeurope-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-westeurope-key}}</value>
+                    </set-header>
+                </when>
+            </choose>
+        </retry>
+        <retry condition="@(context.Response.StatusCode == 429 && (context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-0613"))" count="20" interval="4" delta="2" first-fast-retry="true">
+            <set-variable name="urlId" value="@(context.Variables.GetValueOrDefault<int>("urlId") % 10 + 1)" />
+            <choose>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                    <set-variable name="backendUrl" value="{{aoai-australiaeast-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-australiaeast-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                    <set-variable name="backendUrl" value="{{aoai-canadaeast-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-canadaeast-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                    <set-variable name="backendUrl" value="{{aoai-eastus-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-eastus-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 4)">
+                    <set-variable name="backendUrl" value="{{aoai-eastus2-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-eastus2-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 5)">
+                    <set-variable name="backendUrl" value="{{aoai-francecentral-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-francecentral-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 6)">
+                    <set-variable name="backendUrl" value="{{aoai-japaneast-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-japaneast-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 7)">
+                    <set-variable name="backendUrl" value="{{aoai-northcentral-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-northcentral-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 8)">
+                    <set-variable name="backendUrl" value="{{aoai-swedencentral-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-swedencentral-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 9)">
+                    <set-variable name="backendUrl" value="{{aoai-switzerlandnorth-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-switzerlandnorth-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 10)">
+                    <set-variable name="backendUrl" value="{{aoai-uksouth-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-uksouth-key}}</value>
+                    </set-header>
+                </when>
+            </choose>
+        </retry>
+        <retry condition="@(context.Response.StatusCode == 429 && (context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-1106"))" count="14" interval="10" delta="5" first-fast-retry="true">
+            <set-variable name="urlId" value="@(context.Variables.GetValueOrDefault<int>("urlId") % 7 + 1)" />
+            <choose>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                    <set-variable name="backendUrl" value="{{aoai-australiaeast-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-australiaeast-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                    <set-variable name="backendUrl" value="{{aoai-canadaeast-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-canadaeast-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                    <set-variable name="backendUrl" value="{{aoai-francecentral-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-francecentral-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 4)">
+                    <set-variable name="backendUrl" value="{{aoai-southindia-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-southindia-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 5)">
+                    <set-variable name="backendUrl" value="{{aoai-swedencentral-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-swedencentral-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 6)">
+                    <set-variable name="backendUrl" value="{{aoai-uksouth-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-uksouth-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 7)">
+                    <set-variable name="backendUrl" value="{{aoai-westus-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-westus-key}}</value>
+                    </set-header>
+                </when>
+            </choose>
+        </retry>
+        <retry condition="@(context.Response.StatusCode == 429 && (context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-16k"))" count="20" interval="4" delta="2" first-fast-retry="true">
+            <set-variable name="urlId" value="@(context.Variables.GetValueOrDefault<int>("urlId") % 10 + 1)" />
+            <choose>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                    <set-variable name="backendUrl" value="{{aoai-australiaeast-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-australiaeast-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                    <set-variable name="backendUrl" value="{{aoai-canadaeast-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-canadaeast-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                    <set-variable name="backendUrl" value="{{aoai-eastus-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-eastus-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 4)">
+                    <set-variable name="backendUrl" value="{{aoai-eastus2-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-eastus2-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 5)">
+                    <set-variable name="backendUrl" value="{{aoai-francecentral-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-francecentral-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 6)">
+                    <set-variable name="backendUrl" value="{{aoai-japaneast-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-japaneast-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 7)">
+                    <set-variable name="backendUrl" value="{{aoai-northcentral-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-northcentral-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 8)">
+                    <set-variable name="backendUrl" value="{{aoai-swedencentral-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-swedencentral-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 9)">
+                    <set-variable name="backendUrl" value="{{aoai-switzerlandnorth-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-switzerlandnorth-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 10)">
+                    <set-variable name="backendUrl" value="{{aoai-uksouth-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-uksouth-key}}</value>
+                    </set-header>
+                </when>
+            </choose>
+        </retry>
+        <retry condition="@(context.Response.StatusCode == 429 && (context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-instruct"))" count="4" interval="20" delta="10" first-fast-retry="true">
+            <set-variable name="urlId" value="@(context.Variables.GetValueOrDefault<int>("urlId") % 2 + 1)" />
+            <choose>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                    <set-variable name="backendUrl" value="{{aoai-australiaeast-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-australiaeast-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                    <set-variable name="backendUrl" value="{{aoai-swedencentral-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-swedencentral-key}}</value>
+                    </set-header>
+                </when>
+            </choose>
+        </retry>
+        <retry condition="@(context.Response.StatusCode == 429 && (context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4"))" count="12" interval="10" delta="5" first-fast-retry="true">
+            <set-variable name="urlId" value="@(context.Variables.GetValueOrDefault<int>("urlId") % 6 + 1)" />
+            <choose>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                    <set-variable name="backendUrl" value="{{aoai-australiaeast-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-australiaeast-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                    <set-variable name="backendUrl" value="{{aoai-canadaeast-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-canadaeast-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                    <set-variable name="backendUrl" value="{{aoai-eastus-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-eastus-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 4)">
+                    <set-variable name="backendUrl" value="{{aoai-francecentral-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-francecentral-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 5)">
+                    <set-variable name="backendUrl" value="{{aoai-swedencentral-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-swedencentral-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 6)">
+                    <set-variable name="backendUrl" value="{{aoai-switzerlandnorth-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-switzerlandnorth-key}}</value>
+                    </set-header>
+                </when>
+            </choose>
+        </retry>
+        <retry condition="@(context.Response.StatusCode == 429 && (context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4-32k"))" count="12" interval="10" delta="5" first-fast-retry="true">
+            <set-variable name="urlId" value="@(context.Variables.GetValueOrDefault<int>("urlId") % 6 + 1)" />
+            <choose>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                    <set-variable name="backendUrl" value="{{aoai-australiaeast-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-australiaeast-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                    <set-variable name="backendUrl" value="{{aoai-canadaeast-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-canadaeast-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                    <set-variable name="backendUrl" value="{{aoai-eastus-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-eastus-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 4)">
+                    <set-variable name="backendUrl" value="{{aoai-francecentral-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-francecentral-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 5)">
+                    <set-variable name="backendUrl" value="{{aoai-swedencentral-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-swedencentral-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 6)">
+                    <set-variable name="backendUrl" value="{{aoai-switzerlandnorth-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-switzerlandnorth-key}}</value>
+                    </set-header>
+                </when>
+            </choose>
+        </retry>
+        <retry condition="@(context.Response.StatusCode == 429 && (context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4-turbo"))" count="18" interval="4" delta="2" first-fast-retry="true">
+            <set-variable name="urlId" value="@(context.Variables.GetValueOrDefault<int>("urlId") % 9 + 1)" />
+            <choose>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                    <set-variable name="backendUrl" value="{{aoai-australiaeast-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-australiaeast-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                    <set-variable name="backendUrl" value="{{aoai-canadaeast-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-canadaeast-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                    <set-variable name="backendUrl" value="{{aoai-eastus2-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-eastus2-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 4)">
+                    <set-variable name="backendUrl" value="{{aoai-francecentral-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-francecentral-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 5)">
+                    <set-variable name="backendUrl" value="{{aoai-norwayeast-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-norwayeast-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 6)">
+                    <set-variable name="backendUrl" value="{{aoai-southindia-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-southindia-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 7)">
+                    <set-variable name="backendUrl" value="{{aoai-swedencentral-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-swedencentral-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 8)">
+                    <set-variable name="backendUrl" value="{{aoai-uksouth-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-uksouth-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 9)">
+                    <set-variable name="backendUrl" value="{{aoai-westus-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-westus-key}}</value>
+                    </set-header>
+                </when>
+            </choose>
+        </retry>
+        <retry condition="@(context.Response.StatusCode == 429 && (context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4v"))" count="8" interval="15" delta="5" first-fast-retry="true">
+            <set-variable name="urlId" value="@(context.Variables.GetValueOrDefault<int>("urlId") % 4 + 1)" />
+            <choose>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                    <set-variable name="backendUrl" value="{{aoai-australiaeast-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-australiaeast-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                    <set-variable name="backendUrl" value="{{aoai-swedencentral-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-swedencentral-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                    <set-variable name="backendUrl" value="{{aoai-switzerlandnorth-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-switzerlandnorth-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 4)">
+                    <set-variable name="backendUrl" value="{{aoai-westus-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-westus-key}}</value>
+                    </set-header>
+                </when>
+            </choose>
+        </retry>
+        <retry condition="@(context.Response.StatusCode == 429 && (context.Variables.GetValueOrDefault<string>("aoaiModelName") == "text-embedding-ada-002"))" count="28" interval="4" delta="2" first-fast-retry="true">
+            <set-variable name="urlId" value="@(context.Variables.GetValueOrDefault<int>("urlId") % 14 + 1)" />
+            <choose>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                    <set-variable name="backendUrl" value="{{aoai-australiaeast-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-australiaeast-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                    <set-variable name="backendUrl" value="{{aoai-canadaeast-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-canadaeast-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                    <set-variable name="backendUrl" value="{{aoai-eastus-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-eastus-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 4)">
+                    <set-variable name="backendUrl" value="{{aoai-eastus2-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-eastus2-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 5)">
+                    <set-variable name="backendUrl" value="{{aoai-francecentral-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-francecentral-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 6)">
+                    <set-variable name="backendUrl" value="{{aoai-japaneast-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-japaneast-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 7)">
+                    <set-variable name="backendUrl" value="{{aoai-northcentral-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-northcentral-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 8)">
+                    <set-variable name="backendUrl" value="{{aoai-norwayeast-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-norwayeast-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 9)">
+                    <set-variable name="backendUrl" value="{{aoai-southindia-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-southindia-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 10)">
+                    <set-variable name="backendUrl" value="{{aoai-swedencentral-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-swedencentral-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 11)">
+                    <set-variable name="backendUrl" value="{{aoai-switzerlandnorth-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-switzerlandnorth-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 12)">
+                    <set-variable name="backendUrl" value="{{aoai-uksouth-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-uksouth-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 13)">
+                    <set-variable name="backendUrl" value="{{aoai-westeurope-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-westeurope-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 14)">
+                    <set-variable name="backendUrl" value="{{aoai-westus-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-westus-key}}</value>
+                    </set-header>
+                </when>
+            </choose>
+        </retry>
+        <retry condition="@(context.Response.StatusCode == 429 && (context.Variables.GetValueOrDefault<string>("aoaiModelName") == "dall-e-3"))" count="4" interval="20" delta="10" first-fast-retry="false">
+            <set-variable name="urlId" value="@(context.Variables.GetValueOrDefault<int>("urlId") % 1 + 1)" />
+            <choose>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                    <set-variable name="backendUrl" value="{{aoai-swedencentral-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-swedencentral-key}}</value>
+                    </set-header>
+                </when>
+            </choose>
+        </retry>
+        <retry condition="@(context.Response.StatusCode == 429 && (context.Variables.GetValueOrDefault<string>("aoaiModelName") == "whisper"))" count="4" interval="15" delta="5" first-fast-retry="true">
+            <set-variable name="urlId" value="@(context.Variables.GetValueOrDefault<int>("urlId") % 2 + 1)" />
+            <choose>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                    <set-variable name="backendUrl" value="{{aoai-northcentral-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-northcentral-key}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                    <set-variable name="backendUrl" value="{{aoai-westeurope-endpoint}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{aoai-westeurope-key}}</value>
+                    </set-header>
+                </when>
+            </choose>
+        </retry>
+        <set-header name="Backend-Service-URL" exists-action="override">
+            <value>@((string)context.Variables["backendUrl"])</value>
+        </set-header>
+        <cache-store duration="20" />
+        <choose>
+            <when condition="@(!context.Variables.GetValueOrDefault<bool>("isStream") && (context.Variables.GetValueOrDefault<string>("aoaiModelName") != "text-embedding-ada-002" || context.Variables.GetValueOrDefault<string>("aoaiModelName") != "dall-e-3" || context.Variables.GetValueOrDefault<string>("aoaiModelName") != "whisper"))">
+                <log-to-eventhub logger-id="apim-aoai-logger" partition-id="0">@{
+                    var responseBody = context.Response.Body?.As<JObject>(true);
+                    return new JObject(
+                        new JProperty("event-time", DateTime.UtcNow.ToString()),
+                        new JProperty("operation", responseBody["object"].ToString()),
+                        new JProperty("model", responseBody["model"].ToString()),
+                        new JProperty("modeltime", context.Response.Headers.GetValueOrDefault("Openai-Processing-Ms",string.Empty)),
+                        new JProperty("completion_tokens", responseBody["usage"]["completion_tokens"].ToString()),
+                        new JProperty("prompt_tokens", responseBody["usage"]["prompt_tokens"].ToString()),
+                        new JProperty("total_tokens", responseBody["usage"]["total_tokens"].ToString())
+                    ).ToString();
+                }</log-to-eventhub>
+            </when>
+        </choose>
+        <choose>
+            <when condition="@(!context.Variables.GetValueOrDefault<bool>("isStream") && (context.Variables.GetValueOrDefault<string>("aoaiModelName") == "text-embedding-ada-002"))">
+                <log-to-eventhub logger-id="apim-aoai-logger" partition-id="0">@{
+                    var responseBody = context.Response.Body?.As<JObject>(true);
+                    return new JObject(
+                        new JProperty("prompt_tokens", responseBody["usage"]["prompt_tokens"].ToString()),
+                        new JProperty("total_tokens", responseBody["usage"]["total_tokens"].ToString())
+                    ).ToString();
+                }</log-to-eventhub>
+            </when>
+        </choose>
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>

@@ -3,6 +3,12 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/master/VisualStudio.gitignore
 
+# Ians Files
+test.http
+json.env
+loadtest.ps1
+endpoint_test.ipynb
+
 # User-specific files
 *.rsuser
 *.suo

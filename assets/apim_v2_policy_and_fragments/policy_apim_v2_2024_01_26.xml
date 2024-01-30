@@ -1,0 +1,109 @@
+<!--
+    IMPORTANT:
+    - Policy elements can appear only within the <inbound>, <outbound>, <backend> section elements.
+    - To apply a policy to the incoming request (before it is forwarded to the backend service), place a corresponding policy element within the <inbound> section element.
+    - To apply a policy to the outgoing response (before it is sent back to the caller), place a corresponding policy element within the <outbound> section element.
+    - To add a policy, place the cursor at the desired insertion point and select a policy from the sidebar.
+    - To remove a policy, delete the corresponding policy statement from the policy document.
+    - Position the <base> element within a section element to inherit all policies from the corresponding section element in the enclosing scope.
+    - Remove the <base> element to prevent inheriting policies from the corresponding section element in the enclosing scope.
+    - Policies are applied in the order of their appearance, from the top down.
+    - Comments within policy elements are not supported and may disappear. Place your comments between policy elements or at a higher level scope.
+
+API-M RETRY LOGIC FOR AZURE OPEN AI SERVICE NOTES - 12/13/2023
+This code defines an Azure API Management Service policy configuration that dynamically routes API requests to different backend services based on the "deployment-id" parameter. 
+The routing logic uses a random number generator to distribute the requests among the available backend services for each deployment model. 
+The policy also implements a retry mechanism for handling rate-limiting (HTTP 429) responses. 
+
+Here's a summary of the policy behavior:
+1. Extracts the "deployment-id" parameter from the incoming request.
+2. Based on the "deployment-id", the policy determines which backend services are available for the specific model.
+3. Selects a backend service using a random number generator and sets that to a variable urlId.
+4. Sets the backend service URL and API key based on the selected backend service identified by the urlId.
+5. Performs cache lookup to check if a cached response is available.
+6. Implements a retry mechanism for rate-limiting (HTTP 429) responses, adjusting the backend service selection for each retry attempt.
+7. Stores successful responses in the cache for 20 minutes.
+
+This policy ensures efficient load distribution among backend services, provides a robust retry mechanism for handling rate-limiting, and leverages caching to improve overall performance.
+
+NOTE:
+The "deployment-id" variable is capturing and evaluating the name of the model as you created it - so if you named it "custom-gpt-35-turbo" instead of "gpt-35-turbo" you will need to edit the policies below. This code assumes all models are deployed as named and that each model is deployed in each region only once.
+
+PLEASE NOTE THAT WHEN YOU CHANGE THE NUMBER OF ENDPOINTS BEING USED !!!
+You will need to edit the code for every time you both set and evaluate "urlId" to make sure you are using the correct number of endpoints - whenever you 
+use (new Random(context.RequestId.GetHashCode()).Next or (context.Variables.GetValueOrDefault<int>("urlId"). 
+If you have 5 endpoints, the initial .Next should have (1, 6) as it's inclusive of 1 and exclusive of the top-end 6. 
+The GetValueOrDefault<int>("urlId") then evaluates and adds 1, so not setting the numbers properly may evaluate to a non-existent "urlId" and throws a 500 response code.
+-->
+<policies>
+    <inbound>
+        <base />
+        <!-- Extracting the "deployment-id" parameter from the incoming request and setting it to the aoaiModelName variable.
+             This represents the name under which the model is deployed; it should be the same in ALL regions you wish to allow
+             endpoint selection and retries in -->
+        <set-variable name="aoaiModelName" value="@(context.Request.MatchedParameters["deployment-id"])" />
+        <!-- Determines whether an inbound request has streaming set to true; if the inbound call is set to stream,
+             then we do not send the results to our Event Hub logger\
+             See https://journeyofthegeek.com/2023/11/10/the-challenge-of-logging-azure-openai-stream-completions/
+             or
+             https://github.com/timoklimmer/powerproxy-aoai
+             on ways to handle streaming results for logging purposes -->
+        <set-variable name="isStream" value="@(context.Request.Body.As<JObject>(true)["stream"].Value<bool>())" />
+        <choose>
+            <when condition="@(!string.IsNullOrEmpty(context.Variables.GetValueOrDefault<string>("aoaiModelName")))">
+                <!-- Determining the number of backend services available for the specific model based on the "deployment-id"
+                    and then setting that randomly generated number to the urlId variable -->
+                <include-fragment fragment-id="SetUrldIdVariable" />
+                <!-- Evaluates the "aoaiModelName" variable and then the "urldId" variable to determine which backend service to utilize. Then it sets the appropriate "backendUrl" and api-key based on the Named values for the service -->
+                <include-fragment fragment-id="SetInitialBackendService" />
+            </when>
+        </choose>
+        <cache-lookup vary-by-developer="false" vary-by-developer-groups="false" downstream-caching-type="none">
+            <vary-by-header>Accept</vary-by-header>
+            <vary-by-header>Accept-Charset</vary-by-header>
+            <vary-by-header>Authorization</vary-by-header>
+        </cache-lookup>
+    </inbound>
+    <backend>
+        <include-fragment fragment-id="AllModelRetry" />
+    </backend>
+    <!-- 
+The retry is set to automatically retry the request when the following conditions are met:
+
+The response status code is 429 (Too Many Requests): 
+This usually indicates that the client has sent too many requests in a given amount of time, and the server is rate-limiting the requests.
+AND
+The deployment-id evaluates to be a certain model type - it should not get to the point of hitting the retry policy if there is no deploment-id matching what is provided in the initial request.
+
+Retry Policy Definitions:
+count: This attribute specifies the maximum number of retries that the policy will attempt if the specified condition is met. 
+For example, if count="5", the policy will retry up to 5 times.
+
+interval: This attribute specifies the time interval (in seconds) between each retry attempt. 
+If interval="1", there will be a 1-second delay between retries.
+
+delta: This attribute specifics the time (in seconds) to be added after each subsequent retry attempt; it does not apply between the first and second retry attempts if first-fast-try is set to true.
+
+first-fast-retry: This attribute, when set to true, allows the first retry attempt to happen immediately, without waiting for 
+the specified interval. If set to false, all retry attempts will wait for the interval duration before being executed.
+
+When the retry policy is triggered, it will execute the logic inside the <choose> block to modify the backend service URL and API key based on the value of the urlId variable. This effectively changes the backend service to which the request will be retried, in case the initial backend service returns a 429 status code.
+
+The Backend Service, governed by the "backendUrl", is selected based on the "urlId" variable. With each subsequent retry, "urlId" is incremented by 1. There are different retry blocks for each model as each model has different Token Per Minute (TPM) rates and number of regions that serve that model. 
+Therefore, to allow for different retry rates, the models enter different retry blocks with different settings for the retry. You may wish to modify those settings based on your application and requirements.
+
+PLEASE NOTE THAT WHEN YOU CHANGE THE NUMBER OF ENDPOINTS BEING USED !!!
+You will need to edit the code for every time you both set and evaluate "urlId" to make sure you are using the correct number of endpoints - whenever you 
+use (new Random(context.RequestId.GetHashCode()).Next or (context.Variables.GetValueOrDefault<int>("urlId"). 
+If you have 5 endpoints, the initial .Next should have (1, 6) as it's inclusive of 1 and exclusive of the top-end 6. 
+The GetValueOrDefault<int>("urlId") then evaluates and adds 1, so not setting the numbers properly may evaluate to a non-existent "urlId" and throws a 500 response code.
+-->
+    <outbound>
+        <!-- <cache-store duration="20" />
+        <include-fragment fragment-id="ChatCompletionEventHubLogger" />
+        <include-fragment fragment-id="EmbeddingsEventHubLogger" /> -->
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>

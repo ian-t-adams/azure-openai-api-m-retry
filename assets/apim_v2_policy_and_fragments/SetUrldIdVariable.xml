@@ -1,0 +1,57 @@
+<!--
+    IMPORTANT:
+    - Policy fragment are included as-is whenever they are referenced.
+    - If using variables. Ensure they are setup before use.
+    - Copy and paste your code here or simply start coding
+-->
+<fragment>
+    <choose>
+        <!-- Sets the "urlId" variable to a random number generated via this function:
+        value="@(new Random(context.RequestId.GetHashCode()).Next(1, 2))"
+        as of Dec 14 2023
+        NOTE: 
+                * When using this function the "@(context.Request.MatchedParameters["deployment-id"])" extracts
+                what is then evaluated against the variable "aoaiModelName".
+                * the values in .Next() are inclusive of the minimum and exlusive of the maximum
+                i.e. .Next(1, 2) implies 1 endpoint and .Next(1, 15) implies 14 endpoints
+
+        The "urlId" variable is used in the retry policy as well
+        -->
+        <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-0301")">
+            <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 2))" />
+        </when>
+        <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-0613")">
+            <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 11))" />
+        </when>
+        <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-1106")">
+            <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 8))" />
+        </when>
+        <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-16k")">
+            <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 11))" />
+        </when>
+        <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-instruct")">
+            <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 3))" />
+        </when>
+        <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4")">
+            <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 7))" />
+        </when>
+        <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4-32k")">
+            <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 7))" />
+        </when>
+        <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4-turbo")">
+            <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 10))" />
+        </when>
+        <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4v")">
+            <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 5))" />
+        </when>
+        <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "text-embedding-ada-002")">
+            <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 15))" />
+        </when>
+        <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "dall-e-3")">
+            <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 2))" />
+        </when>
+        <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "whisper")">
+            <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 3))" />
+        </when>
+    </choose>
+</fragment>

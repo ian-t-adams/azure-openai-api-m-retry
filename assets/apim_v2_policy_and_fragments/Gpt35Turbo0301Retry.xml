@@ -1,0 +1,21 @@
+<!--
+    IMPORTANT:
+    - Policy fragment are included as-is whenever they are referenced.
+    - If using variables. Ensure they are setup before use.
+    - Copy and paste your code here or simply start coding
+
+    Governs the retry policy and backendUrl resets when a 429 occurs for the gpt-35-turbo-0301 deployment-id
+-->
+<fragment>
+    <retry condition="@(context.Response.StatusCode == 429 && (context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-0301"))" count="4" interval="20" delta="10" first-fast-retry="false">
+        <set-variable name="urlId" value="@(context.Variables.GetValueOrDefault<int>("urlId") % 1 + 1)" />
+        <choose>
+            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                <set-backend-service base-url="{{aoai-westeurope-endpoint}}" />
+                <set-header name="api-key" exists-action="override">
+                    <value>{{aoai-westeurope-key}}</value>
+                </set-header>
+            </when>
+        </choose>
+    </retry>
+</fragment>

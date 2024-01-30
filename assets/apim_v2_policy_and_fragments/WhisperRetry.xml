@@ -1,0 +1,27 @@
+<!--
+    IMPORTANT:
+    - Policy fragment are included as-is whenever they are referenced.
+    - If using variables. Ensure they are setup before use.
+    - Copy and paste your code here or simply start coding
+
+    Governs the retry policy and backendUrl resets when a 429 occurs for the whisper deployment-id
+-->
+<fragment>
+    <retry condition="@(context.Response.StatusCode == 429 && (context.Variables.GetValueOrDefault<string>("aoaiModelName") == "whisper"))" count="4" interval="15" delta="5" first-fast-retry="true">
+        <set-variable name="urlId" value="@(context.Variables.GetValueOrDefault<int>("urlId") % 2 + 1)" />
+        <choose>
+            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                <set-variable name="backendUrl" value="{{aoai-northcentral-endpoint}}" />
+                <set-header name="api-key" exists-action="override">
+                    <value>{{aoai-northcentral-key}}</value>
+                </set-header>
+            </when>
+            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                <set-variable name="backendUrl" value="{{aoai-westeurope-endpoint}}" />
+                <set-header name="api-key" exists-action="override">
+                    <value>{{aoai-westeurope-key}}</value>
+                </set-header>
+            </when>
+        </choose>
+    </retry>
+</fragment>

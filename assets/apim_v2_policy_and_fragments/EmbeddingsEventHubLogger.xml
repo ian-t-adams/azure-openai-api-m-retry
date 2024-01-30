@@ -1,0 +1,22 @@
+<!--
+    IMPORTANT:
+    - Policy fragment are included as-is whenever they are referenced.
+    - If using variables. Ensure they are setup before use.
+    - Copy and paste your code here or simply start coding
+
+    Sends usage information to an Event Hub named "apimv2-event-hub" for Embeddings calls. The code block checks for a false boolean value for "isStream" and then makes sure the call is to a text-embedding-ada-002 deployment-id
+-->
+<fragment>
+    <choose>
+        <when condition="@(!context.Variables.GetValueOrDefault<bool>("isStream") && (context.Variables.GetValueOrDefault<string>("aoaiModelName") == "text-embedding-ada-002"))">
+            <log-to-eventhub logger-id="apimv2-aoai-logger" partition-id="0">@{
+                var responseBody = context.Response.Body?.As<JObject>(true);
+                return new JObject(
+                    new JProperty("prompt_tokens", responseBody["usage"]["prompt_tokens"].ToString()),
+                    new JProperty("total_tokens", responseBody["usage"]["total_tokens"].ToString())
+                ).ToString();
+            }</log-to-eventhub>
+        </when>
+    </choose>
+</fragment>
+

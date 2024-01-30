@@ -1,0 +1,50 @@
+<!--
+    IMPORTANT:
+    - Policy fragment are included as-is whenever they are referenced.
+    - If using variables. Ensure they are setup before use.
+    - Copy and paste your code here or simply start coding
+
+    Sends usage information to an Event Hub named "apimv2-event-hub" for ChatCompletions calls. The code block checks for a
+    false boolean value for "isStream" and then makes sure the call is not to a text-embedding-ada-002, dall-e-3, or whisper
+    deployment-id
+-->
+<fragment>
+    <choose>
+        <when condition="@(!context.Variables.GetValueOrDefault<bool>("isStream") && (context.Variables.GetValueOrDefault<string>("aoaiModelName") != "text-embedding-ada-002" || context.Variables.GetValueOrDefault<string>("aoaiModelName") != "dall-e-3" || context.Variables.GetValueOrDefault<string>("aoaiModelName") != "whisper"))">
+            <log-to-eventhub logger-id="apimv2-aoai-logger" partition-id="0">@{
+                var responseBody = context.Response.Body?.As<JObject>(true);
+                return new JObject(
+                    new JProperty("event-time", DateTime.UtcNow.ToString()),
+                    new JProperty("operation", responseBody["object"].ToString()),
+                    new JProperty("model", responseBody["model"].ToString()),
+                    new JProperty("modeltime", context.Response.Headers.GetValueOrDefault("Openai-Processing-Ms",string.Empty)),
+                    new JProperty("completion_tokens", responseBody["usage"]["completion_tokens"].ToString()),
+                    new JProperty("prompt_tokens", responseBody["usage"]["prompt_tokens"].ToString()),
+                    new JProperty("total_tokens", responseBody["usage"]["total_tokens"].ToString())
+                ).ToString();
+            }</log-to-eventhub>
+        </when>
+    </choose>
+</fragment>
+
+
+<fragment>
+    <choose>
+        <when condition="@(!context.Variables.GetValueOrDefault<bool>("isStream") && (context.Variables.GetValueOrDefault<string>("aoaiModelName") != "text-embedding-ada-002" || context.Variables.GetValueOrDefault<string>("aoaiModelName") != "dall-e-3" || context.Variables.GetValueOrDefault<string>("aoaiModelName") != "whisper"))">
+            <log-to-eventhub logger-id="apimv2-aoai-logger" partition-id="0">@{
+                var responseBody = context.Response.Body?.As<JObject>(true);
+                var messageContent = responseBody["choices"][0]["message"]["content"].ToString();
+                return new JObject(
+                    new JProperty("event-time", DateTime.UtcNow.ToString()),
+                    new JProperty("operation", responseBody["object"].ToString()),
+                    new JProperty("model", responseBody["model"].ToString()),
+                    new JProperty("modeltime", context.Response.Headers.GetValueOrDefault("Openai-Processing-Ms",string.Empty)),
+                    new JProperty("completion_tokens", responseBody["usage"]["completion_tokens"].ToString()),
+                    new JProperty("prompt_tokens", responseBody["usage"]["prompt_tokens"].ToString()),
+                    new JProperty("total_tokens", responseBody["usage"]["total_tokens"].ToString()),
+                    new JProperty("message_content", messageContent) // add this line
+                ).ToString();
+            }</log-to-eventhub>
+        </when>
+    </choose>
+</fragment>
