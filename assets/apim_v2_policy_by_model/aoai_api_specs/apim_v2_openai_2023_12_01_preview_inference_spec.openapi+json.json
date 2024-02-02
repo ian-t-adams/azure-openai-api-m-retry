@@ -1,14 +1,19 @@
 {
-    "openapi": "3.0.1",
+    "openapi": "3.0.0",
     "info": {
-        "title": "gpt-4-turbo",
-        "description": "",
-        "version": "1.0"
+      "title": "Azure OpenAI Service API",
+      "description": "Azure OpenAI APIs for completions and search",
+      "version": "2023-12-01-preview"
     },
     "servers": [
-        {
-            "url": "https://aoai-lz-apimv2.azure-api.net/openai/deployments/gpt-4-turbo"
+      {
+        "url": "https://{endpoint}/openai",
+        "variables": {
+          "endpoint": {
+            "default": "your-resource-name.openai.azure.com"
+          }
         }
+      }
     ],
     "paths": {
         "/completions": {

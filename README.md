@@ -36,6 +36,7 @@ A major inspriation for this repository was the [Azure-Samples OpenAI Python Ent
 - How-to-use policy fragments
 - Additional load-balancing logic
 - Re-incorporate logging and provide a write-up
+- Address streaming
 
 ## Pre-requisites
 
@@ -147,15 +148,15 @@ The easiest way to copy this exact set-up is to follow the bicep deployment intr
 
     <img src=./assets/apim_v2_policy_by_model/images/delete_deployment_id_success.png width=300>
 
-    e. Repeat steps 3.d. through 3.f. for all the operations for the API spec you imported (later versions support more functions and therefore have more operations). There are 7 operations in the 2023-12-01-preview spec as shown below:
+    g. Repeat steps 3.d. through 3.f. for all the operations for the API spec you imported (later versions support more functions and therefore have more operations). There are 7 operations in the 2023-12-01-preview spec as shown below:
 
     <img src=./assets/apim_v2_policy_by_model/images/seven_operations.png width=200>
 
-    g. Now click where it says ***All operations*** at the top of the list of POST Operations, as shown in the image above, and select **Settings**. Then scroll down in the All Operations Sesttings and set the Subscription ***Header name*** to "api-key" to match OpenAI library specifications as shown below
+    h. Now click where it says ***All operations*** at the top of the list of POST Operations, as shown in the image above, and select **Settings**. Then scroll down in the All Operations Sesttings and set the Subscription ***Header name*** to "api-key" to match OpenAI library specifications as shown below
 
     <img src=./assets/original/apim-config-apikey.png width=600>
 
-    h. Configure the Diagnostic Logs settings: Set the **Sampling rate** to 100% and **Number of payload bytes to log** as the maximum; you may choose to use Application Insights or Azure Monitor or Local as per your requirements. More will be added to this step in the future.
+    i. Configure the Diagnostic Logs settings: Set the **Sampling rate** to 100% and **Number of payload bytes to log** as the maximum; you may choose to use Application Insights or Azure Monitor or Local as per your requirements. More will be added to this step in the future.
 
     <img src=./assets/original/apim_config_3.png width=500>
 
