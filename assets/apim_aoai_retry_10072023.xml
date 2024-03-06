@@ -1,0 +1,395 @@
+<!--
+    IMPORTANT:
+    - Policy elements can appear only within the <inbound>, <outbound>, <backend> section elements.
+    - To apply a policy to the incoming request (before it is forwarded to the backend service), place a corresponding policy element within the <inbound> section element.
+    - To apply a policy to the outgoing response (before it is sent back to the caller), place a corresponding policy element within the <outbound> section element.
+    - To add a policy, place the cursor at the desired insertion point and select a policy from the sidebar.
+    - To remove a policy, delete the corresponding policy statement from the policy document.
+    - Position the <base> element within a section element to inherit all policies from the corresponding section element in the enclosing scope.
+    - Remove the <base> element to prevent inheriting policies from the corresponding section element in the enclosing scope.
+    - Policies are applied in the order of their appearance, from the top down.
+    - Comments within policy elements are not supported and may disappear. Place your comments between policy elements or at a higher level scope.
+
+API-M RETRY LOGIC FOR AZURE OPEN AI SERVICE NOTES - 06/27/2023
+This code defines an Azure API Management Service policy configuration that dynamically routes API requests to different backend services based on the "deployment-id" parameter. 
+The routing logic uses a random number generator to distribute the requests among the available backend services for each deployment model. 
+The policy also implements a retry mechanism for handling rate-limiting (HTTP 429) responses. 
+Additionally, the policy uses caching to improve performance and reduce the load on the backend services.
+
+Here's a summary of the policy behavior:
+1. Extracts the "deployment-id" parameter from the incoming request.
+2. Based on the "deployment-id", the policy determines which backend services are available for the specific model.
+3. Selects a backend service using a random number generator.
+4. Sets the backend service URL and API key based on the selected backend service.
+5. Performs cache lookup to check if a cached response is available.
+6. Implements a retry mechanism for rate-limiting (HTTP 429) responses, adjusting the backend service selection for each retry attempt.
+7. Stores successful responses in the cache for 20 minutes.
+
+This policy ensures efficient load distribution among backend services, provides a robust retry mechanism for handling rate-limiting, and leverages caching to improve overall performance.
+
+NOTE:
+The "deployment-id" variable is capturing and evaluating the name of the model as you created it - so if you named it "custom-gpt-35-turbo" instead of "gpt-35-turbo" you will need to edit the policies below. This code assumes all models are deployed as named and that each model is deployed in each region only once.
+
+NOTE2:
+In this example, the calls attribute is set to 1, which means that only one request is allowed within the defined renewal-period of 1 minute. The counter-key attribute is used to identify the product key.
+
+The token-rate attribute is set to 10, which means that 10 tokens are replenished every minute. The token-size attribute is set to 1, indicating that each request consumes 1 token.
+
+You can adjust the values of calls, renewal-period, token-rate, and token-size according to your specific requirements.
+
+<policies>
+  <inbound>
+    <rate-limit-by-key calls="1" renewal-period="1" counter-key="@(context.Subscription.Id)" token-rate="10" token-size="1" />
+  </inbound>
+</policies>
+
+Note2-Bis:
+the code in the current policy implement rate limiter based on product name in term of RPM  not in term of TPM ( TPM solution un NOTE2 not tested )
+
+NOTE3:  The policy detect if the request is a POST cause deployement-id will prevent from using get method for example to retrieve the list of models
+
+NOTE4 : it also include basic IP filtering with a white-list of IP's used by MSFT for webapp
+-->
+<policies>
+    <inbound>
+        <base />
+        <choose>
+            <when condition="@(context.Request.Method.Equals("POST", StringComparison.OrdinalIgnoreCase))">
+                <set-variable name="aoaiModelName" value="@(context.Request.MatchedParameters["deployment-id"])" />
+            </when>
+        </choose>
+        <ip-filter action="allow">
+            <address>20.74.118.239</address>
+            <address>20.74.119.1</address>
+            <address>20.74.119.15</address>
+            <address>20.74.119.67</address>
+            <address>20.74.119.113</address>
+            <address>20.74.119.162</address>
+            <address>20.111.1.9</address>
+            <address>20.74.119.173</address>
+            <address>20.74.119.187</address>
+            <address>20.74.119.209</address>
+            <address>20.74.114.180</address>
+            <address>20.74.115.103</address>
+            <address>20.74.114.152</address>
+            <address>20.74.40.91</address>
+            <address>20.74.115.182</address>
+            <address>20.74.115.218</address>
+            <address>20.74.115.250</address>
+            <address>20.74.116.134</address>
+            <address>20.74.116.140</address>
+            <address>20.74.116.243</address>
+            <address>20.74.117.9</address>
+            <address>20.74.117.48</address>
+            <address>20.74.118.82</address>
+            <address>20.74.118.181</address>
+            <address>20.74.118.210</address>
+        </ip-filter>
+        <choose>
+            <when condition="@(context.Product.Name == "Starter")">
+                <rate-limit-by-key calls="100" renewal-period="60" counter-key="@(context.Subscription.Id)" />
+            </when>
+            <when condition="@(context.Product.Name == "Unlimited")">
+                <rate-limit-by-key calls="200" renewal-period="60" counter-key="@(context.Subscription.Id)" />
+            </when>
+            <otherwise>
+                <rate-limit-by-key calls="50" renewal-period="60" counter-key="@(context.Subscription.Id)" />
+            </otherwise>
+        </choose>
+        <choose>
+            <when condition="@(!string.IsNullOrEmpty(context.Variables.GetValueOrDefault<string>("aoaiModelName")))">
+                <choose>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "text-davinci-003" || context.Variables.GetValueOrDefault<string>("aoaiModelName") == "text-embedding-ada-002")">
+                        <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 4))" />
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4" || context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4-32k")">
+                        <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 4))" />
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo")">
+                        <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 4))" />
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-16k")">
+                        <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 4))" />
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-instruct")">
+                        <set-variable name="urlId" value="@(new Random(context.RequestId.GetHashCode()).Next(1, 4))" />
+                    </when>
+                    <otherwise>
+                        <set-variable name="urlId" value="1" />
+                    </otherwise>
+                </choose>
+                <choose>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4" || context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4-32k")">
+                        <choose>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                                <set-variable name="backendUrl" value="{{aoai-swedencentral-0}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{openai-swe-0}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                                <set-variable name="backendUrl" value="{{aoai-swedencentral-1}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{openai-swe-1}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                                <set-variable name="backendUrl" value="{{aoai-swedencentral-2}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{openai-swe-2}}</value>
+                                </set-header>
+                            </when>
+                        </choose>
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo")">
+                        <choose>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                                <set-variable name="backendUrl" value="{{aoai-swedencentral-0}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{openai-swe-0}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                                <set-variable name="backendUrl" value="{{aoai-swedencentral-1}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{openai-swe-1}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                                <set-variable name="backendUrl" value="{{aoai-swedencentral-2}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{openai-swe-2}}</value>
+                                </set-header>
+                            </when>
+                        </choose>
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-16k")">
+                        <choose>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                                <set-variable name="backendUrl" value="{{aoai-swedencentral-0}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{openai-swe-0}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                                <set-variable name="backendUrl" value="{{aoai-swedencentral-1}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{openai-swe-1}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                                <set-variable name="backendUrl" value="{{aoai-swedencentral-2}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{openai-swe-2}}</value>
+                                </set-header>
+                            </when>
+                        </choose>
+                    </when>
+                    <when condition="@(context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-instruct")">
+                        <choose>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                                <set-variable name="backendUrl" value="{{aoai-swedencentral-0}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{openai-swe-0}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                                <set-variable name="backendUrl" value="{{aoai-swedencentral-1}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{openai-swe-1}}</value>
+                                </set-header>
+                            </when>
+                            <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                                <set-variable name="backendUrl" value="{{aoai-swedencentral-2}}" />
+                                <set-header name="api-key" exists-action="override">
+                                    <value>{{openai-swe-2}}</value>
+                                </set-header>
+                            </when>
+                        </choose>
+                    </when>
+                    <otherwise>
+                        <set-backend-service base-url="{{aoai-swedencentral-0}}" />
+                        <set-header name="api-key" exists-action="override">
+                            <value>{{openai-swe-0}}</value>
+                        </set-header>
+                    </otherwise>
+                </choose>
+                <set-backend-service base-url="@((string)context.Variables["backendUrl"])" />
+            </when>
+            <otherwise>
+                <set-variable name="backendUrl" value="{{aoai-swedencentral-0}}" />
+                <set-backend-service base-url="@((string)context.Variables["backendUrl"])" />
+                <set-variable name="aoaiModelName" value="gpt-35-turbo" />
+                <set-header name="api-key" exists-action="override">
+                    <value>{{openai-swe-0}}</value>
+                </set-header>
+            </otherwise>
+        </choose>
+        <cache-lookup vary-by-developer="false" vary-by-developer-groups="false" downstream-caching-type="none">
+            <vary-by-header>Accept</vary-by-header>
+            <vary-by-header>Accept-Charset</vary-by-header>
+            <vary-by-header>Authorization</vary-by-header>
+        </cache-lookup>
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <!-- 
+The retry policy in the provided XML is used to automatically retry the request to the backend service under certain conditions. 
+In this specific case, the policy is set to retry the request when the following conditions are met:
+The response status code is 429 (Too Many Requests): This usually indicates that the client has sent too many requests in a given amount of time, and the server is 
+rate-limiting the requests.
+AND
+The deployment-id evaluates to be a certain model type.
+
+Retry Policy Definitions:
+count: This attribute specifies the maximum number of retries that the policy will attempt if the specified condition is met. 
+For example, if count="5", the policy will retry up to 5 times.
+
+interval: This attribute specifies the time interval (in seconds) between each retry attempt. 
+If interval="1", there will be a 1-second delay between retries.
+
+first-fast-retry: This attribute, when set to true, allows the first retry attempt to happen immediately, without waiting for 
+the specified interval. If set to false, all retry attempts will wait for the interval duration before being executed.
+
+When the retry policy is triggered, it will execute the logic inside the <choose> block to modify the backend service URL and API key based 
+on the value of the urlId variable. This effectively changes the backend service to which the request will be retried, 
+in case the initial backend service returns a 429 status code.
+
+This will likely get improved / updated but hey, it works. May the 4th be with you.
+
+The Backend Service, governed by the "backendUrl", is incremented by 1 with each retry. There are different retry blocks for each model as each model has different Token Per Minute (TPM) rates and number of regions that serve that model. 
+Therefore, to allow for different retry rates, the models enter different retry blocks.
+
+PLEASE NOTE THAT WHEN YOU CHANGE THE NUMBER OF ENDPOINTS BEING USED !!!
+You will need to edit the code for every time you both set and evaluate "urlId" to make sure you are using the correct number of endpoints - whenever you 
+use (new Random(context.RequestId.GetHashCode()).Next or (context.Variables.GetValueOrDefault<int>("urlId"). 
+If you have 5 endpoints, the initial .Next should have (1, 6) as it's inclusive of 1 and exclusive of the top-end 6. 
+The GetValueOrDefault<int>("urlId") then evaluates and adds 1, so not setting the numbers properly may evaluate to a non-existent "urlId" and throw a 500.
+-->
+    <outbound>
+        <retry condition="@(context.Response.StatusCode == 429 && (context.Variables.GetValueOrDefault<string>("aoaiModelName") == "text-davinci-003" || context.Variables.GetValueOrDefault<string>("aoaiModelName") == "text-embedding-ada-002"))" count="10" interval="4" delta="2" max-interval="20" first-fast-retry="true">
+            <set-variable name="urlId" value="@(context.Variables.GetValueOrDefault<int>("urlId") % 3 + 1)" />
+            <choose>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                    <set-backend-service base-url="{{aoai-swedencentral-0}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{openai-swe-0}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                    <set-backend-service base-url="{{aoai-swedencentral-1}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{openai-swe-1}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                    <set-backend-service base-url="{{aoai-swedencentral-2}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{openai-swe-2}}</value>
+                    </set-header>
+                </when>
+            </choose>
+        </retry>
+        <retry condition="@(context.Response.StatusCode == 429 && (context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4" || context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-4-32k"))" count="4" interval="20" delta="10" first-fast-retry="true">
+            <set-variable name="urlId" value="@(context.Variables.GetValueOrDefault<int>("urlId") % 3 + 1)" />
+            <choose>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                    <set-backend-service base-url="{{aoai-swedencentral-0}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{openai-swe-0}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                    <set-backend-service base-url="{{aoai-swedencentral-1}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{openai-swe-1}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                    <set-backend-service base-url="{{aoai-swedencentral-2}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{openai-swe-2}}</value>
+                    </set-header>
+                </when>
+            </choose>
+        </retry>
+        <retry condition="@(context.Response.StatusCode == 429 && (context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo"))" count="8" interval="20" delta="10" first-fast-retry="true">
+            <set-variable name="urlId" value="@(context.Variables.GetValueOrDefault<int>("urlId") % 3 + 1)" />
+            <choose>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                    <set-backend-service base-url="{{aoai-swedencentral-0}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{openai-swe-0}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                    <set-backend-service base-url="{{aoai-swedencentral-1}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{openai-swe-1}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                    <set-backend-service base-url="{{aoai-swedencentral-2}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{openai-swe-2}}</value>
+                    </set-header>
+                </when>
+            </choose>
+        </retry>
+        <retry condition="@(context.Response.StatusCode == 429 && (context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-16k"))" count="8" interval="20" delta="10" first-fast-retry="true">
+            <set-variable name="urlId" value="@(context.Variables.GetValueOrDefault<int>("urlId") % 3 + 1)" />
+            <choose>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                    <set-backend-service base-url="{{aoai-swedencentral-0}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{openai-swe-0}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                    <set-backend-service base-url="{{aoai-swedencentral-1}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{openai-swe-1}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                    <set-backend-service base-url="{{aoai-swedencentral-2}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{openai-swe-2}}</value>
+                    </set-header>
+                </when>
+            </choose>
+        </retry>
+        <retry condition="@(context.Response.StatusCode == 429 && (context.Variables.GetValueOrDefault<string>("aoaiModelName") == "gpt-35-turbo-instruct"))" count="8" interval="20" delta="10" first-fast-retry="true">
+            <set-variable name="urlId" value="@(context.Variables.GetValueOrDefault<int>("urlId") % 3 + 1)" />
+            <choose>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 1)">
+                    <set-backend-service base-url="{{aoai-swedencentral-0}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{openai-swe-0}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 2)">
+                    <set-backend-service base-url="{{aoai-swedencentral-1}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{openai-swe-1}}</value>
+                    </set-header>
+                </when>
+                <when condition="@(context.Variables.GetValueOrDefault<int>("urlId") == 3)">
+                    <set-backend-service base-url="{{aoai-swedencentral-2}}" />
+                    <set-header name="api-key" exists-action="override">
+                        <value>{{openai-swe-2}}</value>
+                    </set-header>
+                </when>
+            </choose>
+        </retry>
+        <set-header name="Backend-Service-URL" exists-action="override">
+            <value>@((string)context.Variables["backendUrl"])</value>
+        </set-header>
+        <cache-store duration="20" />
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>
